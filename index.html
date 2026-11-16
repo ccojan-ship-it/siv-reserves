@@ -230,7 +230,7 @@ async function loadAll(){
 async function boot(){
   try{ idb=await idbOpen(); await loadAll(); if(navigator.storage&&navigator.storage.persist)navigator.storage.persist() }
   catch(e){ idb=null; banner("Stockage du téléphone indisponible : les réserves ne seront pas conservées. Ouvre l'appli dans Chrome (pas en navigation privée).") }
-  syLoad();
+  syLoad();if(gFromHash())setTimeout(()=>syncNow(true),500);
   fillInfo();refresh();renderPlans();renderListe();
   if(SY.on)syncNow(false);
   try{$("#k-key").value=localStorage.getItem("siv_key")||""}catch(e){}
@@ -250,14 +250,20 @@ function syLoad(){ try{SY.tok=localStorage.getItem("siv_gtok")||"";SY.exp=+local
 function sySave(){ try{localStorage.setItem("siv_gtok",SY.tok);localStorage.setItem("siv_gexp",String(SY.exp));localStorage.setItem("siv_gon",SY.on?"1":"0");localStorage.setItem("siv_gf",JSON.stringify(GF))}catch(e){} }
 function syState(t){ const el=$("#sy-state"); if(el)el.textContent=t }
 function gisReady(){ return new Promise((res,rej)=>{ let n=0; const t=setInterval(()=>{ if(window.google&&google.accounts&&google.accounts.oauth2){clearInterval(t);res()} else if(++n>80){clearInterval(t);rej(new Error("Service Google injoignable (réseau ?)"))} },100) }) }
+const GREDIR=location.origin+location.pathname;
+function gRedirect(){ const u="https://accounts.google.com/o/oauth2/v2/auth?client_id="+encodeURIComponent(GCID)+"&redirect_uri="+encodeURIComponent(GREDIR)+"&response_type=token&scope="+encodeURIComponent(GSCOPE)+"&hd=mercator-sa.fr&include_granted_scopes=true&state=sivauth";
+  location.href=u; return new Promise(()=>{}) }
+function gFromHash(){ const m=location.hash.match(/access_token=([^&]+).*?expires_in=(\d+)/); if(!m||!/state=sivauth/.test(location.hash))return false;
+  SY.tok=decodeURIComponent(m[1]);SY.exp=Date.now()+(+m[2])*1000;SY.on=true;sySave(); history.replaceState(null,"",location.pathname+location.search); return true }
 async function getToken(interactive){
   if(SY.tok&&Date.now()<SY.exp-60000)return SY.tok;
+  if(interactive)return gRedirect();
   await gisReady();
   return new Promise((res,rej)=>{
     const tc=google.accounts.oauth2.initTokenClient({client_id:GCID,scope:GSCOPE,hd:"mercator-sa.fr",
       callback:r=>{ if(r.error){rej(new Error(r.error));return} SY.tok=r.access_token;SY.exp=Date.now()+(r.expires_in||3600)*1000;SY.on=true;sySave();res(SY.tok) },
       error_callback:e=>rej(new Error((e&&e.type)||"connexion annulée"))});
-    tc.requestAccessToken({prompt:interactive?"":"none"});
+    tc.requestAccessToken({prompt:"none"});
   }) }
 async function gd(url,opt){ opt=opt||{}; const tok=await getToken(false);
   const r=await fetch(url,Object.assign({},opt,{headers:Object.assign({Authorization:"Bearer "+tok},opt.headers||{})}));
@@ -282,6 +288,7 @@ async function syncNow(manual){
   if(!SY.on){ if(manual)syState("Touche d'abord « Se connecter à Google Drive »."); return }
   if(syBusy){ if(manual)syState("Synchronisation déjà en cours…"); return }
   if(!navigator.onLine){ syState("Hors ligne : la synchronisation reprendra dès que le réseau revient."); return }
+  if(!(SY.tok&&Date.now()<SY.exp-60000)){ if(manual)return getToken(true); syState("Connexion expirée (1 h) : touche « Synchroniser » pour te reconnecter."); return }
   syBusy=true; syState("Synchronisation…");
   try{
     const root=await gFolder("Réserves SIV"), dataId=await gFolder("data",root);
@@ -298,8 +305,8 @@ async function syncNow(manual){
   syBusy=false }
 async function uploadDrive(name,blob,mime){ if(!SY.on||!navigator.onLine)return false;
   try{ const root=await gFolder("Réserves SIV"),cid=await gFolder("Constats",root); await gPut(null,{name,parents:[cid]},blob,mime||"application/octet-stream"); return true }catch(e){ return false } }
-$("#sy-conn").onclick=async()=>{ try{ syState("Connexion à Google…"); await getToken(true); await syncNow(true) }catch(e){ syState("⚠️ Connexion impossible : "+(e.message||e)) } };
-$("#sy-now").onclick=async()=>{ try{ if(SY.on&&!(SY.tok&&Date.now()<SY.exp-60000)){ try{await getToken(false)}catch(e){await getToken(true)} } await syncNow(true) }catch(e){ syState("⚠️ "+(e.message||e)) } };
+$("#sy-conn").onclick=()=>{ syState("Connexion à Google…"); getToken(true) };
+$("#sy-now").onclick=()=>syncNow(true);
 window.addEventListener("online",()=>schedSync());
 document.addEventListener("visibilitychange",()=>{ if(!document.hidden)schedSync() });
 setInterval(()=>{ if(!document.hidden)schedSync() },90000);
