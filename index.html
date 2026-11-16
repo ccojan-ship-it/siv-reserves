@@ -179,6 +179,7 @@ canvas#cv{display:block;max-width:100%;max-height:68vh;width:auto;height:auto;ma
     <div id="c-sum" class="mut" style="margin:10px 0"></div>
     <button id="c-pdf">📄 Générer le PDF</button>
     <div class="hint" id="c-state" style="margin-top:8px"></div>
+    <div class="row" id="c-out" hidden style="margin-top:8px"><button id="c-share">📤 Partager / Envoyer</button><button class="sec" id="c-save">⬇️ Enregistrer</button></div>
     <div class="hint" style="margin-top:8px">Le constat n'a de valeur qu'une fois signé par le maître d'ouvrage et les sociétés, ou notifié à chacune par courrier recommandé.</div>
   </div>
 </section>
@@ -564,10 +565,15 @@ async function makePdf(RS,isL){
     return d.output("blob");
 }
 const slug=t=>String(t||"").replace(/[^\w\-]+/g,"_").slice(0,40);
+let LASTF=null;
+$("#c-save").onclick=()=>{ if(LASTF)saveBlob(LASTF.name,LASTF.blob) };
+$("#c-share").onclick=async()=>{ if(!LASTF)return; const f=new File([LASTF.blob],LASTF.name,{type:LASTF.mime});
+  try{ if(navigator.canShare&&navigator.canShare({files:[f]}))await navigator.share({files:[f],title:LASTF.name}); else saveBlob(LASTF.name,LASTF.blob) }
+  catch(e){ if(e&&e.name!=="AbortError")saveBlob(LASTF.name,LASTF.blob) } };
 $("#c-pdf").onclick=async()=>{
   const st=$("#c-state"); if(!reserves.length){st.textContent="Aucune réserve.";return}
   if(!window.jspdf){st.textContent="Bibliothèque PDF non chargée (réseau ?).";return}
-  st.textContent="Génération…"; $("#c-pdf").disabled=true;
+  st.textContent="Génération…"; $("#c-pdf").disabled=true; $("#c-out").hidden=true;
   try{
     const isL=$("#c-type").value==="levee",mode=$("#c-mode").value,op=slug(info.operation||"chantier"),dt=info.dateVisite||today(),pre=isL?"Levee_reserves_":"Constat_reserves_";
     let blob,name;
@@ -579,8 +585,9 @@ $("#c-pdf").onclick=async()=>{
       for(const s of socs){ st.textContent="Génération : "+s+"…"; z.file(pre+slug(s)+"_"+op+"_"+dt+".pdf",await makePdf(reserves.filter(r=>r.societe===s),isL)) }
       blob=await z.generateAsync({type:"blob"}); name="Constats_par_societe_"+op+"_"+dt+".zip";
     }
-    saveBlob(name,blob);st.textContent="Prêt : "+name+" (dossier Téléchargements).";
-    if(SY.on){ st.textContent+=" Envoi vers Drive…"; const ok=await uploadDrive(name,blob,name.endsWith(".zip")?"application/zip":"application/pdf"); st.textContent="Prêt : "+name+(ok?" — enregistré aussi dans Drive (dossier Réserves SIV/Constats).":" — envoi vers Drive impossible, réessaie avec du réseau.") }
+    LASTF={name,blob,mime:name.endsWith(".zip")?"application/zip":"application/pdf"}; $("#c-out").hidden=false;
+    st.textContent="Prêt : "+name+". Touche « Partager » (WhatsApp, mail, Drive…) ou « Enregistrer ».";
+    if(SY.on){ st.textContent+=" Envoi vers Drive…"; const ok=await uploadDrive(name,blob,name.endsWith(".zip")?"application/zip":"application/pdf"); st.textContent="Prêt : "+name+". Touche « Partager » ou « Enregistrer »."+(ok?" Enregistré aussi dans Drive (dossier Réserves SIV/Constats).":" Envoi vers Drive impossible : reconnecte-toi (onglet Chantier).") }
   }catch(e){st.textContent="Échec de génération : "+(e.message||e)}
   $("#c-pdf").disabled=false;
 };
