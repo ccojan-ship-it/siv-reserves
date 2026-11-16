@@ -310,14 +310,14 @@ $("#t-pen").onclick=()=>tool("pen");$("#t-txt").onclick=()=>tool("txt");
 $("#t-undo").onclick=()=>{A.strokes.pop();redraw()};$("#t-clr").onclick=()=>{A.strokes=[];redraw()};
 $$(".sw").forEach(b=>b.onclick=()=>{A.color=b.dataset.c;$$(".sw").forEach(x=>x.classList.toggle("on",x===b))});
 function setMode(sc){A.scroll=sc;$("#t-mode").textContent=sc?"🖐 Défilement (touche pour dessiner)":"✏️ Dessin activé";$("#t-mode").className=sc?"":"ok";$(".canvaswrap").classList.toggle("scroll",sc)}
-$("#t-mode").onclick=()=>setMode(!A.scroll);
-$("#t-done").onclick=()=>{setMode(true);$("#r-soc").scrollIntoView({behavior:"smooth",block:"start"})};
+$("#t-mode").onclick=()=>{ if(Date.now()-(A.openedAt||0)<1800)return; setMode(!A.scroll) };
+$("#t-done").onclick=()=>{ if(Date.now()-(A.openedAt||0)<1800)return; setMode(true);$("#r-soc").scrollIntoView({behavior:"smooth",block:"start"})};
 tool("pen");
 
 async function openPhoto(file){
   if(!file)return; const b=await loadBmp(file);
   const k=Math.min(1,1600/Math.max(b.width,b.height)); A.W=Math.round(b.width*k);A.H=Math.round(b.height*k); cv.width=A.W;cv.height=A.H; A.img=b;A.strokes=[];A.cur=null;
-  setMode(false);draft={pin:null,analyse:null}; ["#r-soc","#r-loc","#r-note","#r-titre","#r-desc","#r-act"].forEach(s=>$(s).value=""); $("#r-grav").value="mineure"; $("#r-delai").value=addDays(info.dateVisite,info.delaiJours); $("#pin-zone").hidden=true;$("#pin-dot").hidden=true;$("#ana-state").textContent="";$("#r-err").textContent="";
+  A.openedAt=Date.now();setMode(false);setTimeout(()=>{if(Date.now()-A.openedAt<2500)setMode(false)},1900);draft={pin:null,analyse:null}; ["#r-soc","#r-loc","#r-note","#r-titre","#r-desc","#r-act"].forEach(s=>$(s).value=""); $("#r-grav").value="mineure"; $("#r-delai").value=addDays(info.dateVisite,info.delaiJours); $("#pin-zone").hidden=true;$("#pin-dot").hidden=true;$("#ana-state").textContent="";$("#r-err").textContent="";
   $("#editor").hidden=false; redraw(); socUI(); $("#editor").scrollIntoView({behavior:"smooth"});
 }
 ["#f-cam","#f-gal"].forEach(s=>$(s).addEventListener("change",async e=>{const f=e.target.files&&e.target.files[0];e.target.value="";if(!f)return;try{await openPhoto(f)}catch(err){showErr("Photo illisible : "+(err&&err.message||err))}}));
