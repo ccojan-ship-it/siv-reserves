@@ -104,6 +104,7 @@ canvas#cv{display:block;max-width:100%;max-height:68vh;width:auto;height:auto;ma
     <div class="canvaswrap"><canvas id="cv"></canvas></div>
     <div class="tools">
       <button id="t-mode" class="ok">✏️ Dessin activé</button>
+      <button class="sec" id="z-in">🔍＋</button><button class="sec" id="z-out">🔍－</button><button class="sec" id="z-rst">⟲ <span id="z-lvl">100%</span></button>
       <button class="sec" id="t-pen">✏️ Stylo</button>
       <button class="sec" id="t-txt">🅣 Texte</button>
       <button class="sec" id="t-undo">↩︎ Annuler</button>
@@ -117,7 +118,7 @@ canvas#cv{display:block;max-width:100%;max-height:68vh;width:auto;height:auto;ma
       <div><label>Épaisseur</label><input type="range" id="t-size" min="1" max="5" value="2"></div>
       <div><label>Texte à poser (puis touche la photo)</label><input id="t-text" placeholder="ex. fissure 3 cm"></div>
     </div>
-    <div class="hint" id="ptr">En mode ✏️ Dessin : stylet ou doigt dessinent. Pour faire défiler la page, touche le bouton 🖐 (ou ✅ en bas).</div>
+    <div class="hint" id="ptr">En mode ✏️ Dessin : stylet ou 1 doigt dessinent ; <b>2 doigts = zoom et déplacement</b> (ou boutons 🔍). Pour faire défiler la page, touche le bouton 🖐 (ou ✅ en bas).</div>
 
     <button class="ok" id="t-done" style="width:100%;margin-top:10px">✅ J'ai fini de dessiner → saisir la société</button>
 
@@ -294,22 +295,45 @@ function redraw(){
     if(s.p.length===1){ctx.fillStyle=s.c;ctx.beginPath();ctx.arc(s.p[0][0],s.p[0][1],s.sz/2,0,7);ctx.fill()}
   }
 }
-function szNow(){return A.W*.0045*(+$("#t-size").value)}
+const V={s:1,tx:0,ty:0};
+function applyV(){ cv.style.transformOrigin="0 0"; cv.style.transform="translate("+V.tx+"px,"+V.ty+"px) scale("+V.s+")"; const z=$("#z-lvl"); if(z)z.textContent=Math.round(V.s*100)+"%" }
+function clampV(){ const w=cv.offsetWidth,h=cv.offsetHeight,W=cv.parentNode.clientWidth,H=cv.parentNode.clientHeight,ol=cv.offsetLeft,ot=cv.offsetTop;
+  V.s=Math.min(8,Math.max(1,V.s));
+  V.tx=Math.min(W-60-ol,Math.max(60-ol-w*V.s,V.tx)); V.ty=Math.min(H-60-ot,Math.max(60-ot-h*V.s,V.ty)); if(V.s===1){V.tx=0;V.ty=0} }
+function zoomAt(cx,cy,ns){ const wr=cv.parentNode.getBoundingClientRect(),L0=wr.left+cv.parentNode.clientLeft+cv.offsetLeft,T0=wr.top+cv.parentNode.clientTop+cv.offsetTop;
+  const px=(cx-L0-V.tx)/V.s,py=(cy-T0-V.ty)/V.s; V.s=ns; V.tx=cx-L0-px*V.s; V.ty=cy-T0-py*V.s; clampV(); applyV() }
+function zoomCenter(f){ const r=cv.parentNode.getBoundingClientRect(); zoomAt(r.left+r.width/2,r.top+r.height/2,Math.min(8,Math.max(1,V.s*f))) }
+function resetV(){V.s=1;V.tx=0;V.ty=0;applyV()}
+function szNow(){return A.W*.0045*(+$("#t-size").value)/Math.sqrt(V.s)}
 function pos(e){const r=cv.getBoundingClientRect();return [(e.clientX-r.left)*A.W/r.width,(e.clientY-r.top)*A.H/r.height,e.pressure||0]}
+const TP=new Map(); let pinch=null;
+function pinchState(){ const p=[...TP.values()]; return {d:Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y)||1,cx:(p[0].x+p[1].x)/2,cy:(p[0].y+p[1].y)/2} }
 cv.addEventListener("pointerdown",e=>{
   if(!A.img||A.scroll)return; e.preventDefault(); $("#ptr").textContent="Dernier contact détecté : "+e.pointerType;
+  if(e.pointerType==="touch"){ TP.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(TP.size===2){ A.cur=null; redraw(); const st=pinchState(); pinch={d0:st.d,s0:V.s,cx:st.cx,cy:st.cy,tx0:V.tx,ty0:V.ty}; return }
+    if(TP.size>2)return }
+  if(pinch)return;
   const p=pos(e);
   if(A.tool==="txt"){const t=$("#t-text").value.trim(); if(t){A.strokes.push({t:"txt",txt:t,x:p[0],y:p[1],c:A.color,sz:szNow()});redraw()} return}
   cv.setPointerCapture(e.pointerId); A.cur={c:A.color,sz:szNow(),pen:e.pointerType==="pen",p:[p]}; redraw();
 });
-cv.addEventListener("pointermove",e=>{ if(!A.cur)return; e.preventDefault(); const evs=e.getCoalescedEvents?e.getCoalescedEvents():[e]; for(const ev of evs)A.cur.p.push(pos(ev)); redraw() });
-const endS=e=>{ if(!A.cur)return; A.strokes.push(A.cur);A.cur=null;redraw() };
+cv.addEventListener("pointermove",e=>{
+  if(TP.has(e.pointerId)){TP.set(e.pointerId,{x:e.clientX,y:e.clientY})}
+  if(pinch&&TP.size>=2){ e.preventDefault(); const st=pinchState(); const ns=Math.min(8,Math.max(1,pinch.s0*st.d/pinch.d0));
+    const wr=cv.parentNode.getBoundingClientRect(),L0=wr.left+cv.parentNode.clientLeft+cv.offsetLeft,T0=wr.top+cv.parentNode.clientTop+cv.offsetTop;
+    const px=(pinch.cx-L0-pinch.tx0)/pinch.s0,py=(pinch.cy-T0-pinch.ty0)/pinch.s0;
+    V.s=ns; V.tx=st.cx-L0-px*ns; V.ty=st.cy-T0-py*ns; clampV(); applyV(); return }
+  if(!A.cur)return; e.preventDefault(); const evs=e.getCoalescedEvents?e.getCoalescedEvents():[e]; for(const ev of evs)A.cur.p.push(pos(ev)); redraw() });
+const endS=e=>{ TP.delete(e.pointerId); if(pinch){ if(TP.size<2)pinch=null; return } if(!A.cur)return; A.strokes.push(A.cur);A.cur=null;redraw() };
 cv.addEventListener("pointerup",endS);cv.addEventListener("pointercancel",endS);
+cv.addEventListener("wheel",e=>{ if(!A.img)return; e.preventDefault(); zoomAt(e.clientX,e.clientY,Math.min(8,Math.max(1,V.s*(e.deltaY<0?1.2:1/1.2)))) },{passive:false});
 function tool(t){A.tool=t;$("#t-pen").classList.toggle("sec",t!=="pen");$("#t-txt").classList.toggle("sec",t!=="txt")}
 $("#t-pen").onclick=()=>tool("pen");$("#t-txt").onclick=()=>tool("txt");
 $("#t-undo").onclick=()=>{A.strokes.pop();redraw()};$("#t-clr").onclick=()=>{A.strokes=[];redraw()};
 $$(".sw").forEach(b=>b.onclick=()=>{A.color=b.dataset.c;$$(".sw").forEach(x=>x.classList.toggle("on",x===b))});
 function setMode(sc){A.scroll=sc;$("#t-mode").textContent=sc?"🖐 Défilement (touche pour dessiner)":"✏️ Dessin activé";$("#t-mode").className=sc?"":"ok";$(".canvaswrap").classList.toggle("scroll",sc)}
+$("#z-in").onclick=()=>zoomCenter(1.5);$("#z-out").onclick=()=>zoomCenter(1/1.5);$("#z-rst").onclick=resetV;
 $("#t-mode").onclick=()=>{ if(Date.now()-(A.openedAt||0)<1800)return; setMode(!A.scroll) };
 $("#t-done").onclick=()=>{ if(Date.now()-(A.openedAt||0)<1800)return; setMode(true);$("#r-soc").scrollIntoView({behavior:"smooth",block:"start"})};
 tool("pen");
@@ -317,7 +341,7 @@ tool("pen");
 async function openPhoto(file){
   if(!file)return; const b=await loadBmp(file);
   const k=Math.min(1,1600/Math.max(b.width,b.height)); A.W=Math.round(b.width*k);A.H=Math.round(b.height*k); cv.width=A.W;cv.height=A.H; A.img=b;A.strokes=[];A.cur=null;
-  A.openedAt=Date.now();setMode(false);setTimeout(()=>{if(Date.now()-A.openedAt<2500)setMode(false)},1900);draft={pin:null,analyse:null}; ["#r-soc","#r-loc","#r-note","#r-titre","#r-desc","#r-act"].forEach(s=>$(s).value=""); $("#r-grav").value="mineure"; $("#r-delai").value=addDays(info.dateVisite,info.delaiJours); $("#pin-zone").hidden=true;$("#pin-dot").hidden=true;$("#ana-state").textContent="";$("#r-err").textContent="";
+  resetV();A.openedAt=Date.now();setMode(false);setTimeout(()=>{if(Date.now()-A.openedAt<2500)setMode(false)},1900);draft={pin:null,analyse:null}; ["#r-soc","#r-loc","#r-note","#r-titre","#r-desc","#r-act"].forEach(s=>$(s).value=""); $("#r-grav").value="mineure"; $("#r-delai").value=addDays(info.dateVisite,info.delaiJours); $("#pin-zone").hidden=true;$("#pin-dot").hidden=true;$("#ana-state").textContent="";$("#r-err").textContent="";
   $("#editor").hidden=false; redraw(); socUI(); $("#editor").scrollIntoView({behavior:"smooth"});
 }
 ["#f-cam","#f-gal"].forEach(s=>$(s).addEventListener("change",async e=>{const f=e.target.files&&e.target.files[0];e.target.value="";if(!f)return;try{await openPhoto(f)}catch(err){showErr("Photo illisible : "+(err&&err.message||err))}}));
