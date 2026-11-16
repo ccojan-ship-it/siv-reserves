@@ -76,6 +76,15 @@ canvas#cv{display:block;max-width:100%;max-height:68vh;width:auto;height:auto;ma
     <input id="k-key" type="password" placeholder="sk-ant-…" autocomplete="off" style="margin-top:8px">
     <div class="hint" id="k-state"></div>
   </div>
+  <h2>Synchronisation Google Drive</h2>
+  <div class="card">
+    <div class="hint">Relie ce téléphone ou ce PC à ton Drive : réserves, photos, plans et PDF y sont enregistrés, et tes appareils restent à jour.</div>
+    <label>Adresse du service (Apps Script)</label><input id="sy-url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+    <label>Code secret</label><input id="sy-tok" type="password" placeholder="code du script" autocomplete="off">
+    <div class="row" style="margin-top:8px"><button id="sy-now">🔄 Synchroniser maintenant</button><button class="sec" id="sy-link">🔗 Lien pour un autre appareil</button></div>
+    <textarea id="sy-linkbox" hidden style="min-height:60px;margin-top:8px"></textarea>
+    <div class="hint" id="sy-state" style="margin-top:8px"></div>
+  </div>
   <h2>Sauvegarde</h2>
   <div class="card">
     <div class="hint">Les réserves sont enregistrées sur ce téléphone. Fais une sauvegarde de temps en temps : si tu effaces les données de Chrome, tout serait perdu.</div>
@@ -208,12 +217,12 @@ let reserves=[],plans=[],apres={};
 function banner(t){$("#banner").innerHTML=t?'<div class="banner">'+t+'</div>':""}
 function idbOpen(){return new Promise((res,rej)=>{const q=indexedDB.open("siv-reserves",1);q.onupgradeneeded=()=>q.result.createObjectStore("kv");q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})}
 function idbTx(mode,fn){return new Promise((res,rej)=>{const t=idb.transaction("kv",mode),st=t.objectStore("kv");const r=fn(st);t.oncomplete=()=>res(r&&r.result);t.onerror=()=>rej(t.error);t.onabort=()=>rej(t.error)})}
-async function wr(path,obj){ await idbTx("readwrite",s=>s.put(obj,path)) }
-async function rm(path){ await idbTx("readwrite",s=>s.delete(path)) }
+async function wr(path,obj){ await idbTx("readwrite",s=>s.put(Object.assign({},obj,{_u:Date.now()}),path)); schedSync() }
+async function rm(path){ await idbTx("readwrite",s=>s.put({_del:true,_u:Date.now()},path)); schedSync() }
 async function idbAll(){return new Promise((res,rej)=>{const out={},t=idb.transaction("kv","readonly"),c=t.objectStore("kv").openCursor();c.onsuccess=()=>{const x=c.result;if(x){out[x.key]=x.value;x.continue()}else res(out)};c.onerror=()=>rej(c.error)})}
 async function loadAll(){
   const all=await idbAll(); reserves=[];plans=[];apres={};
-  for(const k in all){ const v=all[k];
+  for(const k in all){ const v=all[k]; if(!v||v._del)continue;
     if(k==="chantier/info")info=Object.assign(info,v);
     else if(k.startsWith("reserves/"))reserves.push(Object.assign({id:k.slice(9)},v));
     else if(k.startsWith("plans/"))plans.push(Object.assign({id:k.slice(6)},v));
@@ -223,7 +232,9 @@ async function loadAll(){
 async function boot(){
   try{ idb=await idbOpen(); await loadAll(); if(navigator.storage&&navigator.storage.persist)navigator.storage.persist() }
   catch(e){ idb=null; banner("Stockage du téléphone indisponible : les réserves ne seront pas conservées. Ouvre l'appli dans Chrome (pas en navigation privée).") }
+  syFromHash();syLoad();$("#sy-url").value=SY.url;$("#sy-tok").value=SY.token;
   fillInfo();refresh();renderPlans();renderListe();
+  if(SY.url)syncNow(false);
   try{$("#k-key").value=localStorage.getItem("siv_key")||""}catch(e){}
   if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 }
@@ -231,6 +242,42 @@ async function boot(){
 $("#k-key").addEventListener("input",()=>{try{localStorage.setItem("siv_key",$("#k-key").value.trim());$("#k-state").textContent="Clé enregistrée sur ce téléphone."}catch(e){}});
 $("#bk-exp").onclick=async()=>{try{const all=await idbAll();saveBlob("sauvegarde_reserves_"+today()+".json",new Blob([JSON.stringify(all)],{type:"application/json"}));$("#bk-state").textContent="Sauvegarde téléchargée."}catch(e){$("#bk-state").textContent="Échec : "+(e.message||e)}};
 $("#bk-imp").addEventListener("change",async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;try{const o=JSON.parse(await f.text());for(const k in o)await wr(k,o[k]);await loadAll();fillInfo();refresh();renderPlans();renderListe();$("#bk-state").textContent="Sauvegarde restaurée."}catch(err){$("#bk-state").textContent="Fichier illisible."}});
+
+/* ---------- synchronisation Google Drive (via Apps Script) ---------- */
+const SY={url:"",token:""}; let syBusy=false,syT=null;
+function syLoad(){ try{SY.url=localStorage.getItem("siv_sy_url")||"";SY.token=localStorage.getItem("siv_sy_tok")||""}catch(e){} }
+function sySave(){ try{localStorage.setItem("siv_sy_url",SY.url);localStorage.setItem("siv_sy_tok",SY.token)}catch(e){} }
+function syState(t){ const el=$("#sy-state"); if(el)el.textContent=t }
+async function api(body){
+  const r=await fetch(SY.url,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(Object.assign({token:SY.token},body))});
+  const j=await r.json(); if(j.error)throw new Error(j.error); return j }
+function schedSync(){ if(!SY.url)return; clearTimeout(syT); syT=setTimeout(()=>syncNow(false),3000) }
+async function syncNow(manual){
+  if(!SY.url||!SY.token){ if(manual)syState("Renseigne l'adresse et le code, puis réessaie."); return }
+  if(syBusy){ if(manual)syState("Synchronisation déjà en cours…"); return }
+  if(!navigator.onLine){ syState("Hors ligne : la synchronisation reprendra dès que le réseau revient."); return }
+  syBusy=true; syState("Synchronisation…");
+  try{
+    const {index}=await api({a:"list"}); const all=await idbAll(); let up=0,down=0;
+    for(const k in index){ const loc=all[k]; if(!loc||(loc._u||1)<index[k]){ const g=await api({a:"get",key:k}); if(g.value){ await idbTx("readwrite",s=>s.put(g.value,k)); down++ } } }
+    for(const k in all){ const lu=all[k]._u||1; if(lu>(index[k]||0)){ await api({a:"put",key:k,value:all[k],u:lu}); up++ } }
+    if(down){ await loadAll(); fillInfo();refresh();renderPlans();renderListe() }
+    syState("✅ Synchronisé à "+new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})+" (envoyé : "+up+", reçu : "+down+")");
+  }catch(e){ syState("⚠️ Échec de synchronisation : "+(e.message||e)) }
+  syBusy=false }
+function b64blob(blob){return new Promise((res,rej)=>{const f=new FileReader();f.onload=()=>res(String(f.result).split(",")[1]);f.onerror=rej;f.readAsDataURL(blob)})}
+async function uploadDrive(name,blob,mime){ if(!SY.url||!SY.token||!navigator.onLine)return false; try{ await api({a:"file",name,mime,b64:await b64blob(blob),folder:"Constats"}); return true }catch(e){ return false } }
+$("#sy-url").addEventListener("input",()=>{SY.url=$("#sy-url").value.trim();sySave()});
+$("#sy-tok").addEventListener("input",()=>{SY.token=$("#sy-tok").value.trim();sySave()});
+$("#sy-now").onclick=()=>syncNow(true);
+$("#sy-link").onclick=async()=>{ if(!SY.url||!SY.token){syState("Renseigne d'abord l'adresse et le code.");return}
+  const link=location.origin+location.pathname+"#sync="+btoa(unescape(encodeURIComponent(JSON.stringify({u:SY.url,t:SY.token}))));
+  try{await navigator.clipboard.writeText(link);syState("Lien copié. Envoie-le à ton autre appareil (WhatsApp, e-mail) et ouvre-le : la liaison se fait toute seule.")}catch(e){$("#sy-linkbox").value=link;$("#sy-linkbox").hidden=false;syState("Copie ce lien et envoie-le à ton autre appareil.")} };
+function syFromHash(){ const m=location.hash.match(/^#sync=(.+)$/); if(!m)return;
+  try{ const o=JSON.parse(decodeURIComponent(escape(atob(m[1])))); SY.url=o.u;SY.token=o.t;sySave(); history.replaceState(null,"",location.pathname+location.search); }catch(e){} }
+window.addEventListener("online",()=>schedSync());
+document.addEventListener("visibilitychange",()=>{ if(!document.hidden)schedSync() });
+setInterval(()=>{ if(!document.hidden)schedSync() },90000);
 
 /* ---------- navigation ---------- */
 function go(t){ $$(".tabs>section").forEach(s=>s.classList.toggle("on",s.id==="t-"+t)); $$("nav button").forEach(b=>b.classList.toggle("on",b.dataset.t===t)); window.scrollTo(0,0); if(t==="constat")sumConstat(); if(t==="liste")renderListe(); }
@@ -500,7 +547,8 @@ $("#c-pdf").onclick=async()=>{
       for(const s of socs){ st.textContent="Génération : "+s+"…"; z.file(pre+slug(s)+"_"+op+"_"+dt+".pdf",await makePdf(reserves.filter(r=>r.societe===s),isL)) }
       blob=await z.generateAsync({type:"blob"}); name="Constats_par_societe_"+op+"_"+dt+".zip";
     }
-    saveBlob(name,blob);st.textContent="Prêt : "+name+" (dossier Téléchargements du téléphone).";
+    saveBlob(name,blob);st.textContent="Prêt : "+name+" (dossier Téléchargements).";
+    if(SY.url){ st.textContent+=" Envoi vers Drive…"; const ok=await uploadDrive(name,blob,name.endsWith(".zip")?"application/zip":"application/pdf"); st.textContent="Prêt : "+name+(ok?" — enregistré aussi dans Drive (dossier Réserves SIV/Constats).":" — envoi vers Drive impossible, réessaie avec du réseau.") }
   }catch(e){st.textContent="Échec de génération : "+(e.message||e)}
   $("#c-pdf").disabled=false;
 };
