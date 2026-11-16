@@ -79,10 +79,8 @@ canvas#cv{display:block;max-width:100%;max-height:68vh;width:auto;height:auto;ma
   <h2>Synchronisation Google Drive</h2>
   <div class="card">
     <div class="hint">Relie ce téléphone ou ce PC à ton Drive : réserves, photos, plans et PDF y sont enregistrés, et tes appareils restent à jour.</div>
-    <label>Adresse du service (Apps Script)</label><input id="sy-url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
-    <label>Code secret</label><input id="sy-tok" type="password" placeholder="code du script" autocomplete="off">
-    <div class="row" style="margin-top:8px"><button id="sy-now">🔄 Synchroniser maintenant</button><button class="sec" id="sy-link">🔗 Lien pour un autre appareil</button></div>
-    <textarea id="sy-linkbox" hidden style="min-height:60px;margin-top:8px"></textarea>
+    <div class="row" style="margin-top:8px"><button id="sy-conn">🔐 Se connecter à Google Drive</button><button class="sec" id="sy-now">🔄 Synchroniser</button></div>
+    <div class="hint">Utilise ton compte @mercator-sa.fr. Sur chaque appareil (Android, PC, iPhone) : même bouton, même compte. Les données sont dans le dossier « Réserves SIV » de ton Drive.</div>
     <div class="hint" id="sy-state" style="margin-top:8px"></div>
   </div>
   <h2>Sauvegarde</h2>
@@ -232,9 +230,9 @@ async function loadAll(){
 async function boot(){
   try{ idb=await idbOpen(); await loadAll(); if(navigator.storage&&navigator.storage.persist)navigator.storage.persist() }
   catch(e){ idb=null; banner("Stockage du téléphone indisponible : les réserves ne seront pas conservées. Ouvre l'appli dans Chrome (pas en navigation privée).") }
-  syFromHash();syLoad();$("#sy-url").value=SY.url;$("#sy-tok").value=SY.token;
+  syLoad();
   fillInfo();refresh();renderPlans();renderListe();
-  if(SY.url)syncNow(false);
+  if(SY.on)syncNow(false);
   try{$("#k-key").value=localStorage.getItem("siv_key")||""}catch(e){}
   if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 }
@@ -243,38 +241,65 @@ $("#k-key").addEventListener("input",()=>{try{localStorage.setItem("siv_key",$("
 $("#bk-exp").onclick=async()=>{try{const all=await idbAll();saveBlob("sauvegarde_reserves_"+today()+".json",new Blob([JSON.stringify(all)],{type:"application/json"}));$("#bk-state").textContent="Sauvegarde téléchargée."}catch(e){$("#bk-state").textContent="Échec : "+(e.message||e)}};
 $("#bk-imp").addEventListener("change",async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;try{const o=JSON.parse(await f.text());for(const k in o)await wr(k,o[k]);await loadAll();fillInfo();refresh();renderPlans();renderListe();$("#bk-state").textContent="Sauvegarde restaurée."}catch(err){$("#bk-state").textContent="Fichier illisible."}});
 
-/* ---------- synchronisation Google Drive (via Apps Script) ---------- */
-const SY={url:"",token:""}; let syBusy=false,syT=null;
-function syLoad(){ try{SY.url=localStorage.getItem("siv_sy_url")||"";SY.token=localStorage.getItem("siv_sy_tok")||""}catch(e){} }
-function sySave(){ try{localStorage.setItem("siv_sy_url",SY.url);localStorage.setItem("siv_sy_tok",SY.token)}catch(e){} }
+/* ---------- synchronisation Google Drive (OAuth direct, API Drive) ---------- */
+const GCID="744343892975-0cl1trh2pd0635bmfllcopgn8sbis2hn.apps.googleusercontent.com";
+const GSCOPE="https://www.googleapis.com/auth/drive";
+const DAPI="https://www.googleapis.com/drive/v3/files",DUP="https://www.googleapis.com/upload/drive/v3/files";
+const SY={tok:"",exp:0,on:false}; let GF={},syBusy=false,syT=null;
+function syLoad(){ try{SY.tok=localStorage.getItem("siv_gtok")||"";SY.exp=+localStorage.getItem("siv_gexp")||0;SY.on=localStorage.getItem("siv_gon")==="1";GF=JSON.parse(localStorage.getItem("siv_gf")||"{}")}catch(e){} }
+function sySave(){ try{localStorage.setItem("siv_gtok",SY.tok);localStorage.setItem("siv_gexp",String(SY.exp));localStorage.setItem("siv_gon",SY.on?"1":"0");localStorage.setItem("siv_gf",JSON.stringify(GF))}catch(e){} }
 function syState(t){ const el=$("#sy-state"); if(el)el.textContent=t }
-async function api(body){
-  const r=await fetch(SY.url,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(Object.assign({token:SY.token},body))});
-  const j=await r.json(); if(j.error)throw new Error(j.error); return j }
-function schedSync(){ if(!SY.url)return; clearTimeout(syT); syT=setTimeout(()=>syncNow(false),3000) }
+function gisReady(){ return new Promise((res,rej)=>{ let n=0; const t=setInterval(()=>{ if(window.google&&google.accounts&&google.accounts.oauth2){clearInterval(t);res()} else if(++n>80){clearInterval(t);rej(new Error("Service Google injoignable (réseau ?)"))} },100) }) }
+async function getToken(interactive){
+  if(SY.tok&&Date.now()<SY.exp-60000)return SY.tok;
+  await gisReady();
+  return new Promise((res,rej)=>{
+    const tc=google.accounts.oauth2.initTokenClient({client_id:GCID,scope:GSCOPE,hd:"mercator-sa.fr",
+      callback:r=>{ if(r.error){rej(new Error(r.error));return} SY.tok=r.access_token;SY.exp=Date.now()+(r.expires_in||3600)*1000;SY.on=true;sySave();res(SY.tok) },
+      error_callback:e=>rej(new Error((e&&e.type)||"connexion annulée"))});
+    tc.requestAccessToken({prompt:interactive?"":"none"});
+  }) }
+async function gd(url,opt){ opt=opt||{}; const tok=await getToken(false);
+  const r=await fetch(url,Object.assign({},opt,{headers:Object.assign({Authorization:"Bearer "+tok},opt.headers||{})}));
+  if(r.status===401){SY.tok="";SY.exp=0;sySave();throw new Error("session Google expirée : touche « Se connecter à Google Drive »")}
+  if(!r.ok)throw new Error("Drive "+r.status+" "+(await r.text()).slice(0,140));
+  return r }
+async function gList(q,fields){ let out=[],pt=""; do{
+  const u=DAPI+"?pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&q="+encodeURIComponent(q)+"&fields="+encodeURIComponent("nextPageToken,files("+fields+")")+(pt?"&pageToken="+encodeURIComponent(pt):"");
+  const j=await (await gd(u)).json(); out=out.concat(j.files||[]); pt=j.nextPageToken||"" }while(pt); return out }
+async function gFolder(name,parent){ const ck=(parent||"root")+"/"+name; if(GF[ck])return GF[ck];
+  const q="mimeType='application/vnd.google-apps.folder' and trashed=false and name='"+name+"'"+(parent?" and '"+parent+"' in parents":"");
+  const f=await gList(q,"id,createdTime"); f.sort((a,b)=>String(a.createdTime).localeCompare(String(b.createdTime)));
+  let id=f[0]&&f[0].id;
+  if(!id){ const meta={name,mimeType:"application/vnd.google-apps.folder"}; if(parent)meta.parents=[parent];
+    id=(await (await gd(DAPI+"?fields=id&supportsAllDrives=true",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(meta)})).json()).id }
+  GF[ck]=id; sySave(); return id }
+async function gPut(id,meta,data,mime){ const b="siv"+Math.random().toString(36).slice(2);
+  const body=new Blob(["--"+b+"\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"+JSON.stringify(meta)+"\r\n--"+b+"\r\nContent-Type: "+mime+"\r\n\r\n",data,"\r\n--"+b+"--"],{type:"multipart/related; boundary="+b});
+  return (await gd((id?DUP+"/"+id:DUP)+"?uploadType=multipart&supportsAllDrives=true&fields=id",{method:id?"PATCH":"POST",body})).json() }
+function schedSync(){ if(!SY.on)return; clearTimeout(syT); syT=setTimeout(()=>syncNow(false),3000) }
 async function syncNow(manual){
-  if(!SY.url||!SY.token){ if(manual)syState("Renseigne l'adresse et le code, puis réessaie."); return }
+  if(!SY.on){ if(manual)syState("Touche d'abord « Se connecter à Google Drive »."); return }
   if(syBusy){ if(manual)syState("Synchronisation déjà en cours…"); return }
   if(!navigator.onLine){ syState("Hors ligne : la synchronisation reprendra dès que le réseau revient."); return }
   syBusy=true; syState("Synchronisation…");
   try{
-    const {index}=await api({a:"list"}); const all=await idbAll(); let up=0,down=0;
-    for(const k in index){ const loc=all[k]; if(!loc||(loc._u||1)<index[k]){ const g=await api({a:"get",key:k}); if(g.value){ await idbTx("readwrite",s=>s.put(g.value,k)); down++ } } }
-    for(const k in all){ const lu=all[k]._u||1; if(lu>(index[k]||0)){ await api({a:"put",key:k,value:all[k],u:lu}); up++ } }
+    const root=await gFolder("Réserves SIV"), dataId=await gFolder("data",root);
+    const files=await gList("'"+dataId+"' in parents and trashed=false","id,appProperties");
+    const index={},ids={}; files.forEach(f=>{ const p=f.appProperties||{}; if(!p.k)return; const u=+p.u||0; if(ids[p.k]===undefined||u>index[p.k]){index[p.k]=u;ids[p.k]=f.id} });
+    const all=await idbAll(); let up=0,down=0;
+    for(const k in index){ const loc=all[k]; if(!loc||(loc._u||1)<index[k]){ const v=await (await gd(DAPI+"/"+ids[k]+"?alt=media&supportsAllDrives=true")).json(); if(v){ await idbTx("readwrite",s=>s.put(v,k)); down++ } } }
+    for(const k in all){ const lu=all[k]._u||1; if(lu>(index[k]||0)){
+      const meta={name:k.replace(/\//g,"__")+".json",appProperties:{k,u:String(lu)}}; if(!ids[k])meta.parents=[dataId];
+      const r=await gPut(ids[k]||null,meta,JSON.stringify(all[k]),"application/json"); ids[k]=r.id; up++ } }
     if(down){ await loadAll(); fillInfo();refresh();renderPlans();renderListe() }
     syState("✅ Synchronisé à "+new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})+" (envoyé : "+up+", reçu : "+down+")");
   }catch(e){ syState("⚠️ Échec de synchronisation : "+(e.message||e)) }
   syBusy=false }
-function b64blob(blob){return new Promise((res,rej)=>{const f=new FileReader();f.onload=()=>res(String(f.result).split(",")[1]);f.onerror=rej;f.readAsDataURL(blob)})}
-async function uploadDrive(name,blob,mime){ if(!SY.url||!SY.token||!navigator.onLine)return false; try{ await api({a:"file",name,mime,b64:await b64blob(blob),folder:"Constats"}); return true }catch(e){ return false } }
-$("#sy-url").addEventListener("input",()=>{SY.url=$("#sy-url").value.trim();sySave()});
-$("#sy-tok").addEventListener("input",()=>{SY.token=$("#sy-tok").value.trim();sySave()});
-$("#sy-now").onclick=()=>syncNow(true);
-$("#sy-link").onclick=async()=>{ if(!SY.url||!SY.token){syState("Renseigne d'abord l'adresse et le code.");return}
-  const link=location.origin+location.pathname+"#sync="+btoa(unescape(encodeURIComponent(JSON.stringify({u:SY.url,t:SY.token}))));
-  try{await navigator.clipboard.writeText(link);syState("Lien copié. Envoie-le à ton autre appareil (WhatsApp, e-mail) et ouvre-le : la liaison se fait toute seule.")}catch(e){$("#sy-linkbox").value=link;$("#sy-linkbox").hidden=false;syState("Copie ce lien et envoie-le à ton autre appareil.")} };
-function syFromHash(){ const m=location.hash.match(/^#sync=(.+)$/); if(!m)return;
-  try{ const o=JSON.parse(decodeURIComponent(escape(atob(m[1])))); SY.url=o.u;SY.token=o.t;sySave(); history.replaceState(null,"",location.pathname+location.search); }catch(e){} }
+async function uploadDrive(name,blob,mime){ if(!SY.on||!navigator.onLine)return false;
+  try{ const root=await gFolder("Réserves SIV"),cid=await gFolder("Constats",root); await gPut(null,{name,parents:[cid]},blob,mime||"application/octet-stream"); return true }catch(e){ return false } }
+$("#sy-conn").onclick=async()=>{ try{ syState("Connexion à Google…"); await getToken(true); await syncNow(true) }catch(e){ syState("⚠️ Connexion impossible : "+(e.message||e)) } };
+$("#sy-now").onclick=async()=>{ try{ if(SY.on&&!(SY.tok&&Date.now()<SY.exp-60000)){ try{await getToken(false)}catch(e){await getToken(true)} } await syncNow(true) }catch(e){ syState("⚠️ "+(e.message||e)) } };
 window.addEventListener("online",()=>schedSync());
 document.addEventListener("visibilitychange",()=>{ if(!document.hidden)schedSync() });
 setInterval(()=>{ if(!document.hidden)schedSync() },90000);
@@ -548,7 +573,7 @@ $("#c-pdf").onclick=async()=>{
       blob=await z.generateAsync({type:"blob"}); name="Constats_par_societe_"+op+"_"+dt+".zip";
     }
     saveBlob(name,blob);st.textContent="Prêt : "+name+" (dossier Téléchargements).";
-    if(SY.url){ st.textContent+=" Envoi vers Drive…"; const ok=await uploadDrive(name,blob,name.endsWith(".zip")?"application/zip":"application/pdf"); st.textContent="Prêt : "+name+(ok?" — enregistré aussi dans Drive (dossier Réserves SIV/Constats).":" — envoi vers Drive impossible, réessaie avec du réseau.") }
+    if(SY.on){ st.textContent+=" Envoi vers Drive…"; const ok=await uploadDrive(name,blob,name.endsWith(".zip")?"application/zip":"application/pdf"); st.textContent="Prêt : "+name+(ok?" — enregistré aussi dans Drive (dossier Réserves SIV/Constats).":" — envoi vers Drive impossible, réessaie avec du réseau.") }
   }catch(e){st.textContent="Échec de génération : "+(e.message||e)}
   $("#c-pdf").disabled=false;
 };
@@ -556,5 +581,6 @@ $("#c-pdf").onclick=async()=>{
 boot();
 })();
 </script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 </body>
 </html>
