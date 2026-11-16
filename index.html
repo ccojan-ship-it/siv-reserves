@@ -17,6 +17,7 @@ textarea{min-height:84px;resize:vertical}
 button{font:inherit;border:0;border-radius:10px;padding:12px 14px;background:var(--acc);color:#fff;font-weight:600;min-height:46px}
 button.sec{background:#e8edf5;color:var(--ink)}button.red{background:var(--red)}button.ok{background:var(--ok)}
 button:disabled{opacity:.5}
+.sgrow{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--line)}.sgrow .row{flex:0 0 auto}.sgrow .row>*{flex:0 0 auto}
 .row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1 1 140px}
 nav{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);display:flex;z-index:5}
 nav button{flex:1;background:none;color:var(--mut);border-radius:0;font-size:13px;padding:10px 4px;min-height:58px}
@@ -170,6 +171,12 @@ canvas#cv{display:block;max-width:100%;max-height:68vh;width:auto;height:auto;ma
 
 <section id="t-constat">
   <h1>Constat</h1>
+  <h2>Signatures</h2>
+  <div class="card">
+    <div class="hint">À la fin de la visite : le maître d'ouvrage, la maîtrise d'œuvre et chaque société signent ici avec le doigt ou le S Pen. Les signatures apparaissent dans le PDF.</div>
+    <div id="sg-list"></div>
+  </div>
+  <h2>Document</h2>
   <div class="card">
     <label>Type de document</label>
     <select id="c-type"><option value="initial">Constat de réserves (liste des réserves)</option><option value="levee">Constat de levée de réserves</option></select>
@@ -212,7 +219,7 @@ const STAT={ouverte:"À lever",levee:"Levée",partielle:"Partiellement levée",n
 let idb=null;
 const M={info:{},reserves:[],plans:[],apres:{}};
 let info={operation:"",adresse:"",moa:"",moe:"",dateVisite:today(),delaiJours:15,presents:"",societes:""};
-let reserves=[],plans=[],apres={};
+let reserves=[],plans=[],apres={},sigs={};
 function banner(t){$("#banner").innerHTML=t?'<div class="banner">'+t+'</div>':""}
 function idbOpen(){return new Promise((res,rej)=>{const q=indexedDB.open("siv-reserves",1);q.onupgradeneeded=()=>q.result.createObjectStore("kv");q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})}
 function idbTx(mode,fn){return new Promise((res,rej)=>{const t=idb.transaction("kv",mode),st=t.objectStore("kv");const r=fn(st);t.oncomplete=()=>res(r&&r.result);t.onerror=()=>rej(t.error);t.onabort=()=>rej(t.error)})}
@@ -220,12 +227,13 @@ async function wr(path,obj){ await idbTx("readwrite",s=>s.put(Object.assign({},o
 async function rm(path){ await idbTx("readwrite",s=>s.put({_del:true,_u:Date.now()},path)); schedSync() }
 async function idbAll(){return new Promise((res,rej)=>{const out={},t=idb.transaction("kv","readonly"),c=t.objectStore("kv").openCursor();c.onsuccess=()=>{const x=c.result;if(x){out[x.key]=x.value;x.continue()}else res(out)};c.onerror=()=>rej(c.error)})}
 async function loadAll(){
-  const all=await idbAll(); reserves=[];plans=[];apres={};
+  const all=await idbAll(); reserves=[];plans=[];apres={};sigs={};
   for(const k in all){ const v=all[k]; if(!v||v._del)continue;
     if(k==="chantier/info")info=Object.assign(info,v);
     else if(k.startsWith("reserves/"))reserves.push(Object.assign({id:k.slice(9)},v));
     else if(k.startsWith("plans/"))plans.push(Object.assign({id:k.slice(6)},v));
-    else if(k.startsWith("apres/"))apres[k.slice(6)]=v }
+    else if(k.startsWith("apres/"))apres[k.slice(6)]=v
+    else if(k.startsWith("sig/"))sigs[k.slice(4)]=v }
   reserves.sort((a,b)=>a.numero-b.numero);
 }
 async function boot(){
@@ -502,7 +510,28 @@ fAp.onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f||!pickA
 function saveBlob(name,blob){const u=URL.createObjectURL(blob),a=document.createElement("a");a.href=u;a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(u);a.remove()},4000)}
 
 /* ---------- constat ---------- */
-function sumConstat(){ const n=reserves.length; const open=reserves.filter(r=>r.statut==="ouverte"||r.statut==="non_levee"||r.statut==="partielle").length; $("#c-sum").textContent=n?(n+" réserve(s) – "+open+" à lever – "+new Set(reserves.map(r=>r.societe)).size+" société(s)"):"Aucune réserve enregistrée." }
+function sigId(k,v){return String(k+"_"+(k==="Société"?(v||""):"")).normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^\w\-]+/g,"_").slice(0,60)}
+function sgList(){ const socs=[...new Set(reserves.map(r=>r.societe))].sort(); return [["Maître d'ouvrage",info.moa],["Maîtrise d'œuvre",info.moe]].concat(socs.map(x=>["Société",x])) }
+function renderSig(){ const el=$("#sg-list"); if(!el)return; const L=sgList();
+  el.innerHTML=L.map((s,i)=>{const g=sigs[sigId(s[0],s[1])]; return '<div class="sgrow"><div><b>'+esc(s[0])+'</b>'+(s[1]?' : '+esc(s[1]):'')+(g?'<div class="hint">✅ Signé'+(g.nom?' par '+esc(g.nom):'')+' le '+fmtD(String(g.date).slice(0,10))+'</div>':'')+'</div><div class="row"><button data-sg="'+i+'">'+(g?'🔁 Re-signer':'✍️ Signer')+'</button>'+(g?'<button class="sec" data-sgd="'+i+'">Effacer</button>':'')+'</div></div>'}).join("");
+  $$("#sg-list [data-sg]").forEach(b=>b.onclick=()=>openSig(+b.dataset.sg));
+  $$("#sg-list [data-sgd]").forEach(b=>b.onclick=async()=>{const s=sgList()[+b.dataset.sgd]; await rm("sig/"+sigId(s[0],s[1])); await loadAll(); renderSig()}) }
+function openSig(i){ const s=sgList()[i]; if(!s)return; const id=sigId(s[0],s[1]),old=sigs[id];
+  const ov=document.createElement("div"); ov.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:9999;display:flex;align-items:center;justify-content:center;padding:12px";
+  ov.innerHTML='<div style="background:#fff;border-radius:14px;padding:14px;width:100%;max-width:620px"><b>Signature – '+esc(s[0])+(s[1]?' : '+esc(s[1]):'')+'</b><input id="sg-nom" placeholder="Nom du signataire" style="margin:8px 0"><canvas id="sg-cv" style="width:100%;height:220px;border:2px dashed #94a3b8;border-radius:10px;touch-action:none;background:#fff"></canvas><div class="hint" id="sg-h">Signe dans le cadre avec le doigt ou le S Pen.</div><div class="row" style="margin-top:8px"><button class="sec" id="sg-clr">Effacer</button><button class="sec" id="sg-no">Annuler</button><button id="sg-ok">✅ Valider</button></div></div>';
+  document.body.appendChild(ov); ov.querySelector("#sg-nom").value=(old&&old.nom)||s[1]||"";
+  const c=ov.querySelector("#sg-cv"),r=c.getBoundingClientRect(),dpr=2; c.width=Math.round(r.width*dpr); c.height=Math.round(r.height*dpr);
+  const x=c.getContext("2d"); x.lineWidth=3*dpr;x.lineCap="round";x.lineJoin="round";x.strokeStyle="#0b1b4d";
+  let dn=false,has=false,lx=0,ly=0; const pt=e=>{const b=c.getBoundingClientRect();return[(e.clientX-b.left)*c.width/b.width,(e.clientY-b.top)*c.height/b.height]};
+  c.onpointerdown=e=>{e.preventDefault();dn=true;try{c.setPointerCapture(e.pointerId)}catch(_){}[lx,ly]=pt(e);x.beginPath();x.moveTo(lx,ly);x.lineTo(lx+.1,ly+.1);x.stroke();has=true};
+  c.onpointermove=e=>{if(!dn)return;e.preventDefault();const[a,b]=pt(e);x.beginPath();x.moveTo(lx,ly);x.lineTo(a,b);x.stroke();lx=a;ly=b};
+  c.onpointerup=c.onpointercancel=()=>{dn=false};
+  ov.querySelector("#sg-clr").onclick=()=>{x.clearRect(0,0,c.width,c.height);has=false};
+  ov.querySelector("#sg-no").onclick=()=>ov.remove();
+  ov.querySelector("#sg-ok").onclick=async()=>{ if(!has){ov.querySelector("#sg-h").textContent="Signe d'abord dans le cadre.";return}
+    await wr("sig/"+id,{png:c.toDataURL("image/png"),w:c.width,h:c.height,nom:ov.querySelector("#sg-nom").value.trim(),role:s[0],who:s[1]||"",date:new Date().toISOString()});
+    await loadAll(); renderSig(); ov.remove() } }
+function sumConstat(){ renderSig(); const n=reserves.length; const open=reserves.filter(r=>r.statut==="ouverte"||r.statut==="non_levee"||r.statut==="partielle").length; $("#c-sum").textContent=n?(n+" réserve(s) – "+open+" à lever – "+new Set(reserves.map(r=>r.societe)).size+" société(s)"):"Aucune réserve enregistrée." }
 function img(url){return new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=url})}
 async function makePdf(RS,isL){
     const {jsPDF}=window.jspdf; const d=new jsPDF({unit:"mm",format:"a4"}); const PW=210,PH=297,M=14; let y;
@@ -558,7 +587,9 @@ async function makePdf(RS,isL){
     d.text(d.splitTextToSize("Les parties soussignées reconnaissent avoir pris connaissance du présent constat"+(isL?" et de l'état de levée des réserves":" et des réserves qu'il comporte")+". Les réserves non levées restent à la charge de la société concernée dans le délai indiqué.",PW-2*M),M,y);y+=14;
     const signers=[["Maître d'ouvrage",info.moa],["Maîtrise d'œuvre",info.moe]].concat(Object.keys(bySoc).sort().map(s=>["Société",s]));
     const bw=(PW-2*M-8)/2,bh=34; let col=0;
-    for(const [k,v] of signers){ if(y+bh>PH-18){d.addPage();head();y=28} const x=M+col*(bw+8); d.setDrawColor(150);d.rect(x,y,bw,bh);d.setFont("helvetica","bold");d.setFontSize(9);d.text(k+(v?" : "+v:""),x+2,y+5,{maxWidth:bw-4});d.setFont("helvetica","normal");d.setFontSize(8);d.setTextColor(110);d.text("Nom, date, signature",x+2,y+bh-2);d.setTextColor(0); col++; if(col===2){col=0;y+=bh+6} }
+    for(const [k,v] of signers){ if(y+bh>PH-18){d.addPage();head();y=28} const x=M+col*(bw+8); d.setDrawColor(150);d.rect(x,y,bw,bh);d.setFont("helvetica","bold");d.setFontSize(9);d.text(k+(v?" : "+v:""),x+2,y+5,{maxWidth:bw-4});const g=sigs[sigId(k,v)]; d.setFont("helvetica","normal");d.setFontSize(8);d.setTextColor(110);
+      if(g&&g.png){ const ww=Math.min(bw-4,(bh-17)*g.w/g.h); d.addImage(g.png,"PNG",x+2,y+8,ww,ww*g.h/g.w); d.text(((g.nom?g.nom+" – ":"")+"signé le "+fmtD(String(g.date).slice(0,10))),x+2,y+bh-2) } else d.text("Nom, date, signature",x+2,y+bh-2);
+      d.setTextColor(0); col++; if(col===2){col=0;y+=bh+6} }
     /* pied de page */
     const n=d.getNumberOfPages(); for(let i=1;i<=n;i++){d.setPage(i);d.setFontSize(8);d.setTextColor(110);d.text((isL?"Constat de levée de réserves":"Constat de réserves")+" - établi le "+fmtD(info.dateVisite||today()),M,PH-8);d.text("Page "+i+" / "+n,PW-M,PH-8,{align:"right"});d.setTextColor(0)}
     
