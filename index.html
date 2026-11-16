@@ -117,7 +117,7 @@ canvas#cv{display:block;max-width:100%;max-height:68vh;width:auto;height:auto;ma
       <div><label>Épaisseur</label><input type="range" id="t-size" min="1" max="5" value="2"></div>
       <div><label>Texte à poser (puis touche la photo)</label><input id="t-text" placeholder="ex. fissure 3 cm"></div>
     </div>
-    <label><input type="checkbox" id="t-finger" style="width:auto"> Dessiner aussi au doigt (sinon : stylet seul)</label>
+    <div class="hint" id="ptr">En mode ✏️ Dessin : stylet ou doigt dessinent. Pour faire défiler la page, touche le bouton 🖐 (ou ✅ en bas).</div>
 
     <button class="ok" id="t-done" style="width:100%;margin-top:10px">✅ J'ai fini de dessiner → saisir la société</button>
 
@@ -297,7 +297,7 @@ function redraw(){
 function szNow(){return A.W*.0045*(+$("#t-size").value)}
 function pos(e){const r=cv.getBoundingClientRect();return [(e.clientX-r.left)*A.W/r.width,(e.clientY-r.top)*A.H/r.height,e.pressure||0]}
 cv.addEventListener("pointerdown",e=>{
-  if(!A.img||A.scroll)return; if(e.pointerType==="touch"&&!$("#t-finger").checked)return; e.preventDefault();
+  if(!A.img||A.scroll)return; e.preventDefault(); $("#ptr").textContent="Dernier contact détecté : "+e.pointerType;
   const p=pos(e);
   if(A.tool==="txt"){const t=$("#t-text").value.trim(); if(t){A.strokes.push({t:"txt",txt:t,x:p[0],y:p[1],c:A.color,sz:szNow()});redraw()} return}
   cv.setPointerCapture(e.pointerId); A.cur={c:A.color,sz:szNow(),pen:e.pointerType==="pen",p:[p]}; redraw();
